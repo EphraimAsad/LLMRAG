@@ -1,258 +1,196 @@
 import streamlit as st
 import pandas as pd
-import re
+import json
 import os
-from fpdf import FPDF
 from datetime import datetime
+from fpdf import FPDF
 
-# --- ENGINE IMPORTS ---
+# --- IMPORTS ---
 from engine import BacteriaIdentifier
-from engine.parser_llm import evaluate_gold_tests, smart_parse
+from engine.parser_llm import evaluate_gold_tests
+from engine.parser_llm import smart_parse
+
+# Training tools
 from training.rules_suggester import suggest_rules_from_gold, save_rule_suggestions
 from training.rules_sanitizer import sanitize_rules
 
-# --- CONFIG ---
-st.set_page_config(page_title="BactAI-D Assistant", layout="wide")
+# GitHub integration
+from github import Github
+import tempfile
 
-# --- LOAD DATABASE ---
+
+# --------------------------------------------
+# STREAMLIT CONFIG
+# --------------------------------------------
+st.set_page_config(page_title="BactAI-D", layout="wide")
+st.sidebar.title("🧫 BactAI-D")
+
+# --------------------------------------------
+# LOAD DATABASE
+# --------------------------------------------
 @st.cache_data
-def load_data(path, last_modified):
+def load_data(path):
     df = pd.read_excel(path)
     df.columns = [c.strip() for c in df.columns]
     return df
 
-primary_path = os.path.join("data", "bacteria_db.xlsx")
-fallback_path = os.path.join("bacteria_db.xlsx")
-data_path = primary_path if os.path.exists(primary_path) else fallback_path
-
-try:
-    last_modified = os.path.getmtime(data_path)
-except FileNotFoundError:
-    st.error(f"Database file not found at '{primary_path}' or '{fallback_path}'.")
+db_path = "data/bacteria_db.xlsx" if os.path.exists("data/bacteria_db.xlsx") else "bacteria_db.xlsx"
+if not os.path.exists(db_path):
+    st.error("Database file not found.")
     st.stop()
 
-db = load_data(data_path, last_modified)
+db = load_data(db_path)
 eng = BacteriaIdentifier(db)
 
-st.sidebar.caption(
-    f"📅 Database last updated: {datetime.fromtimestamp(last_modified).strftime('%Y-%m-%d %H:%M:%S')}"
-)
+# --------------------------------------------
+# APP TABS
+# --------------------------------------------
+tab1, tab2 = st.tabs(["🔍 Identify", "🧠 Training"])
 
-# --- PAGE HEADER ---
-st.title("🧫 BactAI-D: Intelligent Bacteria Identification Assistant")
-st.markdown("Use the sidebar to input your biochemical and morphological results.")
+# ===============================================================
+# TAB 1 — IDENTIFICATION
+# ===============================================================
+with tab1:
+    st.header("🔍 Identify Unknown Isolate")
 
-# --- SIDEBAR INPUTS ---
-MORPH_FIELDS = ["Gram Stain", "Shape", "Colony Morphology", "Media Grown On", "Motility", "Capsule", "Spore Formation"]
-ENZYME_FIELDS = ["Catalase", "Oxidase", "Coagulase", "Lipase Test"]
-SUGAR_FIELDS = [
-    "Glucose Fermentation", "Lactose Fermentation", "Sucrose Fermentation", "Maltose Fermentation",
-    "Mannitol Fermentation", "Sorbitol Fermentation", "Xylose Fermentation", "Rhamnose Fermentation",
-    "Arabinose Fermentation", "Raffinose Fermentation", "Trehalose Fermentation", "Inositol Fermentation"
-]
-
-if "user_input" not in st.session_state:
-    st.session_state.user_input = {}
-if "results" not in st.session_state:
-    st.session_state.results = pd.DataFrame()
-
-if "reset_trigger" in st.session_state and st.session_state["reset_trigger"]:
-    for key in list(st.session_state.user_input.keys()):
-        st.session_state.user_input[key] = "Unknown"
-    st.session_state["reset_trigger"] = False
-    st.rerun()
-
-st.sidebar.markdown(
-    """
-    <div style='background-color:#1565C0; padding:12px; border-radius:10px;'>
-        <h3 style='text-align:center; color:white; margin:0;'>🔬 Input Test Results</h3>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# --- FIXED: local import for re safety ---
-def get_unique_values(field):
-    import re  # ✅ ensures Streamlit hot-reload always has access
-    vals = []
-    for v in eng.db[field]:
-        parts = re.split(r"[;/]", str(v))
-        for p in parts:
-            clean = p.strip()
-            if clean and clean not in vals:
-                vals.append(clean)
-    vals.sort()
-    return vals
-
-# --- SIDEBAR EXPANDERS ---
-with st.sidebar.expander("🧫 Morphological Tests", expanded=True):
-    for field in MORPH_FIELDS:
-        if field in ["Shape", "Colony Morphology", "Media Grown On"]:
-            options = get_unique_values(field)
-            selected = st.multiselect(field, options, default=[], key=field)
-            st.session_state.user_input[field] = "; ".join(selected) if selected else "Unknown"
-        else:
-            st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=field)
-
-with st.sidebar.expander("🧪 Enzyme Tests", expanded=False):
-    for field in ENZYME_FIELDS:
-        st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=field)
-
-with st.sidebar.expander("🍬 Carbohydrate Fermentation Tests", expanded=False):
-    for field in SUGAR_FIELDS:
-        st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=field)
-
-with st.sidebar.expander("🧬 Other Tests", expanded=False):
+    # Collect test results
+    st.subheader("Enter Test Results")
+    user_input = {}
     for field in db.columns:
-        if field in ["Genus"] + MORPH_FIELDS + ENZYME_FIELDS + SUGAR_FIELDS:
+        if field == "Genus":
             continue
-        if field == "Haemolysis Type":
-            options = get_unique_values(field)
-            selected = st.multiselect(field, options, default=[], key=field)
-            st.session_state.user_input[field] = "; ".join(selected) if selected else "Unknown"
-        elif field == "Oxygen Requirement":
-            options = get_unique_values(field)
-            st.session_state.user_input[field] = st.selectbox(field, ["Unknown"] + options, index=0, key=field)
-        elif field == "Growth Temperature":
-            st.session_state.user_input[field] = st.text_input(field + " (°C)", "", key=field)
-        else:
-            st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=field)
+        user_input[field] = st.text_input(field, "Unknown")
 
-# --- BUTTONS ---
-if st.sidebar.button("🔄 Reset All Inputs"):
-    st.session_state["reset_trigger"] = True
-    st.rerun()
-
-if st.sidebar.button("🔍 Identify"):
-    with st.spinner("Analyzing results..."):
-        results = eng.identify(st.session_state.user_input)
+    if st.button("🔬 Identify"):
+        results = eng.identify(user_input)
         if not results:
             st.error("No matches found.")
         else:
-            results = pd.DataFrame(
-                [
-                    [
-                        r.genus,
-                        f"{r.confidence_percent()}%",
-                        f"{r.true_confidence()}%",
-                        r.reasoning_paragraph(results),
-                        r.reasoning_factors.get("next_tests", ""),
-                        r.extra_notes
-                    ]
-                    for r in results
-                ],
-                columns=["Genus", "Confidence", "True Confidence (All Tests)", "Reasoning", "Next Tests", "Extra Notes"],
-            )
-            st.session_state.results = results
+            df_res = pd.DataFrame([
+                [r.genus, f"{r.confidence_percent()}%", f"{r.true_confidence()}%", r.reasoning_paragraph(results)]
+                for r in results
+            ], columns=["Genus", "Confidence", "True Confidence (All Tests)", "Reasoning"])
+            st.dataframe(df_res)
 
-# --- DISPLAY RESULTS ---
-if not st.session_state.results.empty:
-    st.info("Percentages based upon options entered. True confidence percentage shown within each expanded result.")
-    for _, row in st.session_state.results.iterrows():
-        confidence_value = int(row["Confidence"].replace("%", ""))
-        confidence_color = "🟢" if confidence_value >= 75 else "🟡" if confidence_value >= 50 else "🔴"
-        header = f"**{row['Genus']}** — {confidence_color} {row['Confidence']}"
-        with st.expander(header):
-            st.markdown(f"**Reasoning:** {row['Reasoning']}")
-            st.markdown(f"**Top 3 Next Tests to Differentiate:** {row['Next Tests']}")
-            st.markdown(f"**True Confidence (All Tests):** {row['True Confidence (All Tests)']}")
-            if row["Extra Notes"]:
-                st.markdown(f"**Notes:** {row['Extra Notes']}")
 
-# --- EXPORT TO PDF ---
-def export_pdf(results_df, user_input):
-    def safe_text(text):
-        text = str(text).replace("•", "-").replace("—", "-").replace("–", "-")
-        return text.encode("latin-1", "replace").decode("latin-1")
+# ===============================================================
+# TAB 2 — TRAINING
+# ===============================================================
+with tab2:
+    st.header("🧠 Model Training & Rule Learning")
 
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "BactAI-d Identification Report", ln=True, align="C")
+    st.markdown("""
+    This section lets you run gold standard tests, generate field weights, and propose new parsing rules.
+    """)
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 8, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-    pdf.ln(4)
+    # --------------------------
+    # Gold Test Runner
+    # --------------------------
+    st.subheader("Run Gold Tests")
 
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Entered Test Results:", ln=True)
-    pdf.set_font("Helvetica", "", 10)
-    for k, v in user_input.items():
-        pdf.multi_cell(0, 6, safe_text(f"- {k}: {v}"))
-
-    pdf.ln(6)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Top Possible Matches:", ln=True)
-    pdf.set_font("Helvetica", "", 10)
-
-    for _, row in results_df.iterrows():
-        pdf.multi_cell(0, 7, safe_text(f"- {row['Genus']} — Confidence: {row['Confidence']} (True: {row['True Confidence (All Tests)']})"))
-        pdf.multi_cell(0, 6, safe_text(f"  Reasoning: {row['Reasoning']}"))
-        if row['Next Tests']:
-            pdf.multi_cell(0, 6, safe_text(f"  Next Tests: {row['Next Tests']}"))
-        if row['Extra Notes']:
-            pdf.multi_cell(0, 6, safe_text(f"  Notes: {row['Extra Notes']}"))
-        pdf.ln(3)
-
-    pdf.output("BactAI-d_Report.pdf")
-    return "BactAI-d_Report.pdf"
-
-if not st.session_state.results.empty:
-    if st.button("📄 Export Results to PDF"):
-        pdf_path = export_pdf(st.session_state.results, st.session_state.user_input)
-        with open(pdf_path, "rb") as f:
-            st.download_button("⬇️ Download PDF", f, file_name="BactAI-d_Report.pdf")
-
-# ------------------------------------------------
-# TRAINING TAB SECTION
-# ------------------------------------------------
-st.markdown("---")
-st.header("🧠 Training & Evaluation")
-
-col1, col2 = st.columns([2,1])
-with col1:
-    gold_path = st.text_input("Gold tests path", value="training/gold_tests.json", key="gold_path_inp")
+    gold_path = st.text_input("Gold tests path", value="training/gold_tests.json")
     use_llm = st.toggle("Use LLM fallback", value=True, key="use_llm_toggle")
-with col2:
-    model_name = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-coder:6.7b"), key="model_name_inp")
+    model_name = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-coder:6.7b"))
+    run_btn = st.button("▶️ Run Gold Tests")
 
-run_btn = st.button("▶️ Run gold tests")
-
-if run_btn:
-    with st.spinner("Evaluating gold tests..."):
-        try:
+    if run_btn:
+        if not os.path.exists(gold_path):
+            st.error("Gold test file not found!")
+        else:
             with open(gold_path, "r", encoding="utf-8") as f:
                 gold_data = json.load(f)
+            st.info("Running gold tests... please wait ⏳")
             summary = evaluate_gold_tests(gold_data, model_name=model_name, use_llm=use_llm)
             st.session_state["gold_summary"] = summary
-            st.success(f"Overall accuracy: {summary['overall_accuracy']}%")
-            st.json(summary["per_field_accuracy"])
-        except Exception as e:
-            st.error(f"Error running gold tests: {e}")
 
-if "gold_summary" in st.session_state:
-    st.markdown("### 📈 Gold Test Results Summary")
-    st.json(st.session_state["gold_summary"])
+            st.success(f"✅ Overall accuracy: {summary['overall_accuracy']}%")
+            st.write(pd.DataFrame.from_dict(summary["per_field_accuracy"], orient="index", columns=["Accuracy %"]))
+            st.write(f"Failed cases: {len(summary['failed_cases'])}")
 
-    # Suggest rules from failed golds
-    if st.button("💡 Suggest new rules"):
-        with st.spinner("Analyzing failed cases for candidate rules..."):
-            with open(gold_path, "r", encoding="utf-8") as f:
-                gold_data = json.load(f)
-            candidates = suggest_rules_from_gold(gold_data, model_name=model_name, use_llm=use_llm)
-            save_rule_suggestions(candidates)
-            st.success(f"Saved {len(candidates)} candidate rules to training/rule_candidates.json")
+            with st.expander("View Failed Cases"):
+                st.dataframe(pd.DataFrame(summary["failed_cases"]))
 
-    # Sanitize suggested rules
-    if st.button("🧹 Sanitize suggested rules"):
-        import json
-        with open("training/rule_candidates.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        ok, msg, cleaned = sanitize_rules(data.get("rules", []))
-        st.info(msg)
-        if ok:
-            st.session_state["sanitized_rules"] = cleaned
-            st.json(cleaned[:5])
+    # --------------------------
+    # Suggest New Rules
+    # --------------------------
+    st.subheader("Suggest New Rules (from Gold Test Results)")
+    if st.button("💡 Suggest Rules from Failed Cases"):
+        if "gold_summary" not in st.session_state:
+            st.error("Run gold tests first!")
+        else:
+            gold_data = json.load(open(gold_path, "r", encoding="utf-8"))
+            model_name = os.getenv("OLLAMA_MODEL", "deepseek-coder:6.7b")
+            suggestions = suggest_rules_from_gold(gold_data, model_name=model_name, use_llm=use_llm)
+            save_rule_suggestions(suggestions)
+            st.session_state["suggestions"] = suggestions
+            st.success(f"✅ {len(suggestions)} rule candidates generated.")
+            st.dataframe(pd.DataFrame(suggestions))
 
-st.markdown("<hr>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b></div>", unsafe_allow_html=True)
+    # --------------------------
+    # Sanitize Suggested Rules
+    # --------------------------
+    st.subheader("🧹 Sanitize Rule Candidates")
+    if st.button("🧪 Sanitize Rules"):
+        if "suggestions" not in st.session_state:
+            st.error("No rule suggestions found. Run 'Suggest Rules' first.")
+        else:
+            ok, msg, cleaned = sanitize_rules(st.session_state["suggestions"])
+            st.info(msg)
+            if ok:
+                st.session_state["sanitized_rules"] = cleaned
+                st.dataframe(pd.DataFrame(cleaned))
+            else:
+                st.warning("Some rules invalid — check the console log for details.")
+
+    # --------------------------
+    # Commit to GitHub
+    # --------------------------
+    st.subheader("📦 Commit Sanitized Rules to GitHub")
+
+    gh_token = st.text_input("GitHub Token (stored securely in Streamlit Secrets)", type="password")
+    repo_name = st.text_input("Repository (e.g., EphraimAsad/BactAI-D)", value=os.getenv("GITHUB_REPO", "EphraimAsad/BactAI-D"))
+
+    # timestamped branch to prevent duplicates
+    default_branch_name = f"bactai-learned-rules-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    new_branch_name = st.text_input("New branch name", value=default_branch_name)
+
+    if st.button("⬆️ Commit Sanitized Rules"):
+        if "sanitized_rules" not in st.session_state:
+            st.error("No sanitized rules to commit.")
+        elif not gh_token or not repo_name:
+            st.error("Please enter GitHub token and repository.")
+        else:
+            try:
+                g = Github(gh_token)
+                repo = g.get_repo(repo_name)
+
+                # Create new branch
+                main_ref = repo.get_git_ref("heads/main")
+                repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=main_ref.object.sha)
+
+                # Write temp JSON
+                tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".json").name
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump({"version": 1, "rules": st.session_state["sanitized_rules"]}, f, indent=2)
+
+                # Commit
+                with open(tmp_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                repo.create_file(
+                    path="training/learned_rules.json",
+                    message=f"feat(training): add {len(st.session_state['sanitized_rules'])} learned rules",
+                    content=content,
+                    branch=new_branch_name
+                )
+
+                # PR
+                repo.create_pull(
+                    title=f"Add learned rules ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+                    body=f"Auto-generated from BactAI-D Streamlit UI with {len(st.session_state['sanitized_rules'])} rules.",
+                    head=new_branch_name,
+                    base="main"
+                )
+
+                st.success(f"✅ Committed {len(st.session_state['sanitized_rules'])} rules and opened PR.")
+            except Exception as e:
+                st.error(f"❌ GitHub commit failed: {e}")
