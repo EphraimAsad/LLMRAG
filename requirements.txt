@@ -3,4 +3,6 @@ numpy
 streamlit
 openpyxl
 fpdf
+ollama
+
 
