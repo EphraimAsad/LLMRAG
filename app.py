@@ -56,6 +56,7 @@ def export_pdf(results_df, user_input):
     def safe_text(text):
         text = str(text).replace("•", "-").replace("—", "-").replace("–", "-")
         return text.encode("latin-1", "replace").decode("latin-1")
+
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 16)
@@ -194,11 +195,11 @@ with tab_form:
             else:
                 st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=f"form_{field}")
 
-    if st.sidebar.button("🔄 Reset All Inputs"):
+    if st.sidebar.button("🔄 Reset All Inputs", key="reset_btn"):
         st.session_state["reset_trigger"] = True
         st.rerun()
 
-    if st.sidebar.button("🔍 Identify"):
+    if st.sidebar.button("🔍 Identify", key="identify_btn"):
         with st.spinner("Analyzing results..."):
             results_df = run_identification(st.session_state.user_input)
             if results_df.empty:
@@ -218,26 +219,23 @@ with tab_form:
                 st.markdown(f"**True Confidence:** {row['True Confidence (All Tests)']}")
 
     if not st.session_state.results.empty:
-        if st.button("📄 Export Results to PDF"):
+        if st.button("📄 Export Results to PDF", key="pdf_export_btn"):
             pdf_path = export_pdf(st.session_state.results, st.session_state.user_input)
             with open(pdf_path, "rb") as f:
-                st.download_button("⬇️ Download PDF", f, file_name="BactAI-d_Report.pdf")
+                st.download_button("⬇️ Download PDF", f, file_name="BactAI-d_Report.pdf", key="pdf_download_btn")
 
 # ----------------------------- TEXT MODE -------------------------------------
 with tab_text:
     st.markdown("Paste microbiology description below.")
     colA, colB = st.columns([2,1])
     with colA:
-        text_input = st.text_area("Free-text description", height=200)
+        text_input = st.text_area("Free-text description", height=200, key="text_input_area")
     with colB:
-    use_llm = st.toggle("Use LLM fallback", value=True, key="use_llm_text")
-    model_name = st.text_input("Ollama model",
-                               value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"),
-                               key="model_name_text")
+        use_llm = st.toggle("Use LLM fallback", value=True, key="use_llm_text")
+        model_name = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"), key="model_name_text")
 
     parse_btn = st.button("🧠 Parse Text", key="parse_text_btn")
     identify_btn = st.button("🔍 Identify from Parsed", key="identify_from_parsed_btn")
-
 
     if "parsed_record" not in st.session_state:
         st.session_state.parsed_record = None
@@ -268,36 +266,26 @@ with tab_train:
 
     col1, col2 = st.columns([2,1])
     with col1:
-         gold_path = st.text_input("Gold tests path", value="training/gold_tests.json", key="gold_path_train")
-         use_llm_train = st.toggle("Use LLM fallback", value=True, key="use_llm_train")
+        gold_path = st.text_input("Gold tests path", value="training/gold_tests.json", key="gold_path_train")
+        use_llm_train = st.toggle("Use LLM fallback", value=True, key="use_llm_train")
     with col2:
-         model_name_train = st.text_input("Ollama model",
-                                         value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"),
-                                         key="model_name_train")
+        model_name_train = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"), key="model_name_train")
     run_btn = st.button("▶️ Run gold tests", key="run_gold_btn")
-
-    if run_btn:
-        summary, df_cases, df_fields = run_gold_tests(
-            gold_path, use_llm=use_llm_train, model=model_name_train
-        )
-
 
     if run_btn:
         try:
             with st.spinner("Evaluating gold tests..."):
-                from training.gold_eval import run_gold_tests
-                summary, df_cases, df_fields = run_gold_tests(gold_path, use_llm=use_llm, model=model_name)
+                summary, df_cases, df_fields = run_gold_tests(gold_path, use_llm=use_llm_train, model=model_name_train)
             st.subheader(f"Overall accuracy: **{summary['overall_accuracy_percent']}%** ({summary['cases_count']} cases)")
             st.markdown("### Per-field accuracy:")
             st.dataframe(df_fields, use_container_width=True)
             st.markdown("### Per-case results:")
             st.dataframe(df_cases, use_container_width=True)
-            st.download_button("⬇️ Download per-field CSV", df_fields.to_csv(index=False), file_name="per_field_accuracy.csv")
-            st.download_button("⬇️ Download per-case CSV", df_cases.to_csv(index=False), file_name="per_case_accuracy.csv")
+            st.download_button("⬇️ Download per-field CSV", df_fields.to_csv(index=False), file_name="per_field_accuracy.csv", key="dl_field_csv")
+            st.download_button("⬇️ Download per-case CSV", df_cases.to_csv(index=False), file_name="per_case_accuracy.csv", key="dl_case_csv")
         except Exception as e:
             st.error(f"Error: {e}")
 
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b></div>", unsafe_allow_html=True)
-
