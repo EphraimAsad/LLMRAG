@@ -145,9 +145,43 @@ def run_identification(user_input: dict):
 # Tabs: Form Mode vs Text Mode
 # -----------------------------------------------------------------------------
 
-tab_form, tab_text = st.tabs(["📝 Form Mode", "🧠 Text Mode (Rules + LLM)"])
-
 # ----------------------------- FORM MODE -------------------------------------
+# after: tab_form, tab_text = st.tabs([...])
+tab_form, tab_text, tab_train = st.tabs(["📝 Form Mode", "🧠 Text Mode (Rules + LLM)", "🎓 Training"])
+
+with tab_train:
+    st.markdown("Run your **gold tests** against the parser to measure accuracy and learn field weights.")
+    from training.gold_eval import run_gold_tests
+
+    col1, col2 = st.columns([2,1])
+    with col1:
+        gold_path = st.text_input("Gold tests JSON path", value="training/gold_tests.json")
+        use_llm = st.toggle("Use LLM fallback (Rules + LLM)", value=True)
+    with col2:
+        model_name = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"))
+    run_btn = st.button("▶️ Run gold tests")
+
+    if run_btn:
+        try:
+            with st.spinner("Evaluating gold tests..."):
+                summary, df_cases, df_fields = run_gold_tests(gold_path, use_llm=use_llm, model=model_name)
+
+            st.subheader(f"Overall accuracy: **{summary['overall_accuracy_percent']}%** on {summary['cases_count']} cases")
+            st.markdown("**Per-field accuracy** (which tests are parsed most reliably):")
+            st.dataframe(df_fields, use_container_width=True)
+
+            st.markdown("**Per-case results**:")
+            st.dataframe(df_cases, use_container_width=True)
+
+            # Optional download
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("⬇️ Download per-field CSV", df_fields.to_csv(index=False), file_name="per_field_accuracy.csv")
+            with c2:
+                st.download_button("⬇️ Download per-case CSV", df_cases.to_csv(index=False), file_name="per_case_accuracy.csv")
+
+        except Exception as e:
+            st.error(f"Gold test run failed: {e}")
 
 with tab_form:
     st.markdown("Use the sidebar to input your biochemical and morphological results.")
@@ -320,3 +354,4 @@ with tab_text:
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b> | www.linkedin.com/in/zain-asad-1998EPH</div>", unsafe_allow_html=True)
+
