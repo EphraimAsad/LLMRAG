@@ -5,6 +5,7 @@ import os
 from fpdf import FPDF
 from datetime import datetime
 from engine import BacteriaIdentifier
+from engine.parser_llm import smart_parse
 
 # --- CONFIG ---
 st.set_page_config(page_title="BactAI-D Assistant", layout="wide")
@@ -123,6 +124,11 @@ with st.sidebar.expander("🧬 Other Tests", expanded=False):
         else:
             st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=field)
 
+user_free_text = st.text_area("Paste microbiology description", height=160, placeholder="e.g., Gram-negative rods, oxidase positive ...")
+if st.button("🧠 Parse Text (Rules + LLM)"):
+    parsed = smart_parse(user_free_text)  # returns full canonical record
+    st.json(parsed)  # show what the engine will use
+    
 # --- RESET BUTTON ---
 if st.sidebar.button("🔄 Reset All Inputs"):
     st.session_state["reset_trigger"] = True
@@ -213,4 +219,5 @@ if not st.session_state.results.empty:
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b> | www.linkedin.com/in/zain-asad-1998EPH</div>", unsafe_allow_html=True)
+
 
