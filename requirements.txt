@@ -4,5 +4,6 @@ streamlit
 openpyxl
 fpdf
 ollama
+requests
 
 
