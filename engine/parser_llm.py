@@ -1,236 +1,170 @@
-"""
-parser_llm.py — Semantic (LLM) parser for microbiology text using Ollama.
-
-Usage:
-    from engine.parser_llm import smart_parse
-    rec = smart_parse("Paste your report text here")
-
-What it does:
-- Runs fast rule parser first (engine.parser_rules).
-- If any fields remain Unknown, asks Ollama (DeepSeek) to infer them.
-- Returns a fully canonicalized dict per engine.schema (including 'Other').
-
-Notes:
-- Default model: 'deepseek-r1:latest' (change via env OLLAMA_MODEL or function arg).
-- Works even if Ollama is not available: it will return the rule-only result.
-"""
-
-from __future__ import annotations
-import json
 import os
+import json
 import re
-from typing import Dict, Any, Optional, Tuple
-from engine.parser_rules_runtime import apply_rules, merge_into_record
+from typing import Dict, Any, List
+import ollama  # Using Ollama for LLM access
+from datetime import datetime
 
+from engine.parser_rules_runtime import apply_rules, merge_into_record, normalize_field, normalize_value
 
-try:
-    import ollama  # pip install ollama
-    _OLLAMA_AVAILABLE = True
-except Exception:
-    _OLLAMA_AVAILABLE = False
-
-from .schema import (
-    FIELD_ORDER, UNKNOWN, normalize_value, canonicalize_record
-)
-from .parser_rules import parse_and_canonicalize as rules_parse_full, parse_text_rules
-
-# -----------------------------------------------------------------------------
+# --------------------------------------------
 # Config
-# -----------------------------------------------------------------------------
+# --------------------------------------------
+DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-coder:6.7b")  # or any available Ollama model
+TEMPERATURE = 0.2
 
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:latest")
-MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "800"))  # generous but safe
-TIMEOUT_S  = int(os.getenv("OLLAMA_TIMEOUT", "30"))
+# --------------------------------------------
+# Prompt Template for LLM Parsing
+# --------------------------------------------
+LLM_PROMPT_TEMPLATE = """
+You are an expert microbiologist AI.
+Extract key biochemical and morphological results from the following text into a JSON object
+with exactly these fields (fill with "Unknown" if not mentioned):
 
-# Only these Oxygen values are considered valid for normalization (project rule)
-OXY_ALLOWED = {
-    "Aerobic", "Anaerobic", "Intracellular",
-    "Microaerophilic", "Capnophilic", "Facultative Anaerobe"
-}
-
-# -----------------------------------------------------------------------------
-# Prompt builder
-# -----------------------------------------------------------------------------
-
-def _fields_instructions() -> str:
-    # Give the model a compact list of fields and allowed values it must obey.
-    lines = []
-    lines.append("- Use EXACT field names below. If unknown/unsure, output 'Unknown'.")
-    lines.append("- Multi-value fields use '; ' as a separator (example: 'Blood Agar; Chocolate Agar').")
-    lines.append("- Growth Temperature MUST be 'low//high' in °C (e.g., '30//37').")
-    lines.append("- For Oxygen Requirement, use exactly one of: " + ", ".join(sorted(OXY_ALLOWED)) + ".")
-    lines.append("- Categorical tests must be one of: Positive, Negative, Variable, or Unknown.")
-    lines.append("")
-    lines.append("Fields (output keys):")
-    for f in FIELD_ORDER:
-        lines.append(f"  - {f}")
-    return "\n".join(lines)
-
-SYSTEM_PROMPT = (
-    "You are a careful microbiology information extractor. "
-    "Read a short lab-style description and produce a STRICT JSON object keyed by the given schema. "
-    "If a value is not stated or cannot be inferred with high confidence, output 'Unknown'. "
-    "Do not invent media or tests that are not mentioned."
-)
-
-USER_TEMPLATE = """Extract fields from this text.
-
-Text:
-\"\"\"
-{TEXT}
-\"\"\"
+{fields_list}
 
 Rules:
-{RULES}
+- Only use "Positive", "Negative", or "Variable" for test results unless otherwise noted.
+- For oxygen requirement, use one of: Aerobic, Anaerobic, Microaerophilic, Capnophilic, Facultative Anaerobe, Intracellular.
+- Growth Temperature should be numeric (single number or "low//high" range).
+- Use proper capitalization (e.g. "Positive", not "positive").
+- Do not infer extra results not mentioned in the text.
 
-Output:
-- A single JSON object ONLY (no prose, no markdown, no code fences).
-- Include ALL fields listed (fill missing with 'Unknown').
-- Do NOT include any extra keys.
+Text:
+\"\"\"{input_text}\"\"\"
 """
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-def _strip_code_fences(s: str) -> str:
-    # Remove ```json ... ``` or ``` ... ``` wrappers if present
-    s = s.strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
-        s = re.sub(r"\s*```$", "", s)
-    return s.strip()
-
-def _safe_json_load(s: str) -> Optional[Dict[str, Any]]:
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
-
-def _enforce_oxygen(value: str) -> str:
-    # Keep schema normalization but ensure this exact closed set when applicable
-    v = (value or "").strip()
-    if v in OXY_ALLOWED:
-        return v
-    # allow common synonyms to map to your allowed set
-    low = v.lower()
-    if "facult" in low:
-        return "Facultative Anaerobe"
-    if "microaero" in low:
-        return "Microaerophilic"
-    if "capno" in low or "co2" in low:
-        return "Capnophilic"
-    if "intracell" in low:
-        return "Intracellular"
-    if "aerob" in low and "anaerob" not in low:
-        return "Aerobic"
-    if "anaerob" in low:
-        return "Anaerobic"
-    return UNKNOWN
-
-def _canonicalize_full(obj: Dict[str, Any]) -> Dict[str, str]:
-    # Normalize each provided value, then canonicalize to ensure all fields present.
-    pre = {}
-    for k, v in obj.items():
-        if k == "Oxygen Requirement":
-            pre[k] = _enforce_oxygen(str(v))
-        else:
-            pre[k] = normalize_value(k, str(v))
-    return canonicalize_record(pre)
-
-def _merge_records(rule_rec: Dict[str, str], llm_rec: Dict[str, str]) -> Dict[str, str]:
-    """Prefer rule parser values; fill Unknowns from LLM. Keep 'Other' merged."""
-    out = dict(rule_rec)
-    for k, v in llm_rec.items():
-        if k == "Other":
-            # merge extra info
-            if out.get("Other", UNKNOWN) in (None, "", UNKNOWN):
-                out["Other"] = v
-            elif v not in (None, "", UNKNOWN):
-                if out["Other"].strip() != v.strip():
-                    out["Other"] = "; ".join([out["Other"], v]).strip("; ")
-            continue
-
-        if k not in out or out[k] in (None, "", UNKNOWN):
-            out[k] = v
-    return out
-
-# -----------------------------------------------------------------------------
-# Core call to Ollama
-# -----------------------------------------------------------------------------
-
-def _ollama_chat(model: str, text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    if not _OLLAMA_AVAILABLE:
-        return None, "Ollama Python package not available."
-
-    try:
-        prompt_user = USER_TEMPLATE.format(TEXT=text, RULES=_fields_instructions())
-        resp = ollama.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt_user},
-            ],
-            options={"num_predict": MAX_TOKENS, "temperature": 0.2},
-        )
-        content = resp["message"]["content"]
-    except Exception as e:
-        return None, f"Ollama error: {e}"
-
-    content = _strip_code_fences(content)
-    data = _safe_json_load(content)
-    if data is None:
-        return None, "Failed to parse JSON from LLM response."
-    if not isinstance(data, dict):
-        return None, "LLM returned non-object JSON."
-
-    return data, None
-
-# -----------------------------------------------------------------------------
-# Public API
-# -----------------------------------------------------------------------------
-
-def parse_with_llm(text: str, model: str = DEFAULT_MODEL, retries: int = 1) -> Dict[str, str]:
+# --------------------------------------------
+# Helper: get all schema fields
+# --------------------------------------------
+def get_schema_fields() -> List[str]:
     """
-    Ask the LLM to produce a full JSON record (all schema fields present).
-    Returns a canonicalized record (Unknown for anything missing).
+    Read the full field list from schema.py (if available) or fallback to defaults.
+    """
+    try:
+        from engine.schema import ALL_FIELDS
+        return ALL_FIELDS
+    except Exception:
+        # fallback (minimal)
+        return [
+            "Gram Stain", "Shape", "Catalase", "Oxidase", "Coagulase", "Urease", "Indole", "Citrate",
+            "Methyl Red", "VP", "Haemolysis", "Haemolysis Type", "Motility", "Spore Formation",
+            "Capsule", "Oxygen Requirement", "Growth Temperature", "Dnase", "ONPG",
+            "Nitrate Reduction", "Gelatin Hydrolysis", "Esculin Hydrolysis", "Lysine Decarboxylase",
+            "Ornitihine Decarboxylase", "Arginine dihydrolase", "H2S",
+            "Glucose Fermentation", "Lactose Fermentation", "Sucrose Fermentation", "Maltose Fermentation",
+            "Mannitol Fermentation", "Sorbitol Fermentation", "Xylose Fermentation", "Rhamnose Fermentation",
+            "Arabinose Fermentation", "Raffinose Fermentation", "Trehalose Fermentation", "Inositol Fermentation",
+            "NaCl Tolerant (>=6%)", "Media Grown On", "Colony Morphology"
+        ]
+
+
+# --------------------------------------------
+# Core Parser Logic
+# --------------------------------------------
+def smart_parse(text: str, model_name: str = DEFAULT_MODEL, use_llm: bool = True) -> Dict[str, str]:
+    """
+    Smart hybrid parser:
+    1. Apply learned + base rules.
+    2. Optionally use the LLM for unknown fields.
+    3. Return clean, normalized dict.
     """
     if not text or not text.strip():
-        return canonicalize_record({})
+        return {}
 
-    # First attempt
-    data, err = _ollama_chat(model, text)
+    # Step 1 — Rules-only parse
+    rule_results = apply_rules(text)
 
-    # Retry once with a stronger reminder if needed
-    if data is None and retries > 0:
-        retry_note = (
-            "\nIMPORTANT: Your previous output was not valid JSON. "
-            "Now output ONLY a single JSON object following the rules, with double quotes."
+    # Step 2 — Start record with all fields
+    record = {f: "Unknown" for f in get_schema_fields()}
+    record = merge_into_record(record, rule_results)
+
+    # Step 3 — If not using LLM, return what rules found
+    if not use_llm:
+        return record
+
+    # Step 4 — Build dynamic field list for prompt
+    fields_str = "\n".join(f"- {f}" for f in get_schema_fields())
+
+    # Step 5 — Send prompt to LLM
+    prompt = LLM_PROMPT_TEMPLATE.format(
+        fields_list=fields_str,
+        input_text=text
+    )
+
+    try:
+        response = ollama.chat(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": TEMPERATURE}
         )
-        data, err = _ollama_chat(model, text + retry_note)
+        raw = response["message"]["content"].strip()
 
-    if data is None:
-        # Fallback to empty canonical record if LLM is unreachable
-        return canonicalize_record({})
+        # Extract JSON block
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not json_match:
+            raise ValueError("No JSON found in LLM response")
 
-    # Enforce canonical values + full schema coverage
-    return _canonicalize_full(data)
+        parsed = json.loads(json_match.group(0))
+    except Exception as e:
+        print(f"[WARN] LLM parsing failed: {e}")
+        parsed = {}
 
-def smart_parse(text: str, model: str = DEFAULT_MODEL) -> Dict[str, str]:
+    # Step 6 — Normalize LLM output and merge
+    normalized = {}
+    for k, v in parsed.items():
+        field = normalize_field(k)
+        value = normalize_value(field, v)
+        normalized[field] = value
+
+    record = merge_into_record(record, normalized)
+    return record
+
+
+# --------------------------------------------
+# Utility for Batch Gold Test Evaluation
+# --------------------------------------------
+def evaluate_gold_tests(gold_data: List[Dict[str, Any]], model_name: str = DEFAULT_MODEL, use_llm: bool = True):
     """
-    Hybrid parse:
-    1) Use rule parser to extract high-confidence fields.
-    2) Ask LLM for a full record.
-    3) Merge: keep rule parser values; fill remaining Unknowns from LLM.
-    Returns a canonical record per schema (includes 'Other').
+    Run smart_parse on every gold test, compare with expected, and calculate field accuracy.
+    Returns a summary dict with per-field and overall stats.
     """
-    # Rule-only partial canonical (already fills Unknown + Other)
-    rule_full = rules_parse_full(text)
+    all_fields = get_schema_fields()
+    results = {f: {"total": 0, "correct": 0} for f in all_fields}
+    failed_cases = []
 
-    # If rule parser did well (few Unknowns), you can early-return.
-    # Here we always ask LLM, but you can short-circuit if desired.
-    llm_full = parse_with_llm(text, model=model)
+    for case in gold_data:
+        name = case.get("name")
+        input_text = case.get("input", "")
+        expected = case.get("expected", {})
 
-    merged = _merge_records(rule_full, llm_full)
-    # Final pass to ensure normalization is strictly applied
-    return canonicalize_record(merged)
+        parsed = smart_parse(input_text, model_name=model_name, use_llm=use_llm)
+
+        for field, exp_val in expected.items():
+            norm_field = normalize_field(field)
+            norm_exp = normalize_value(norm_field, exp_val)
+            got = parsed.get(norm_field, "Unknown")
+
+            results[norm_field]["total"] += 1
+            if got == norm_exp:
+                results[norm_field]["correct"] += 1
+            else:
+                failed_cases.append({
+                    "name": name,
+                    "field": norm_field,
+                    "expected": norm_exp,
+                    "got": got,
+                    "text": input_text
+                })
+
+    # Compute accuracy per field
+    per_field_acc = {f: (v["correct"] / v["total"]) if v["total"] else 0.0 for f, v in results.items()}
+    overall_acc = sum(v["correct"] for v in results.values()) / max(1, sum(v["total"] for v in results.values()))
+
+    summary = {
+        "timestamp": datetime.now().isoformat(),
+        "overall_accuracy": round(overall_acc * 100, 2),
+        "per_field_accuracy": {f: round(a * 100, 2) for f, a in per_field_acc.items()},
+        "failed_cases": failed_cases
+    }
+    return summary
