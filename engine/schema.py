@@ -1,186 +1,215 @@
 """
-Schema definitions and normalizers for BactAI-D
-Ensures all fields and values are canonical and validated consistently.
+engine/schema.py
+Defines the canonical schema for BactAI-D and normalization helpers
+used across the LLM parser, rule engine, and sanitizers.
 """
 
-# -------------------------------------------------------------
-# Canonical field list
-# -------------------------------------------------------------
+# =========================================================
+#                    FIELD DEFINITIONS
+# =========================================================
 ALL_FIELDS = [
+    # Core identity
+    "Genus",
+    "Species",
+
     # Morphology
-    "Genus", "Species", "Gram Stain", "Shape", "Colony Morphology",
-    "Media Grown On", "Motility", "Capsule", "Spore Formation",
+    "Gram Stain",
+    "Shape",
+    "Colony Morphology",
+    "Motility",
+    "Capsule",
+    "Spore Formation",
+    "Oxygen Requirement",
+    "Growth Temperature",
+    "Media Grown On",
 
-    # Core enzyme/biochemical
-    "Catalase", "Oxidase", "Coagulase", "Urease", "Indole", "Citrate",
-    "Methyl Red", "VP", "Dnase", "ONPG", "Lipase Test", "Lecithinase",
-
-    # Haemolysis
-    "Haemolysis", "Haemolysis Type",
+    # Enzyme & biochemical tests
+    "Catalase",
+    "Oxidase",
+    "Coagulase",
+    "Lipase Test",
+    "Urease",
+    "Indole",
+    "Citrate",
+    "Methyl Red",
+    "VP",
+    "H2S",
+    "Dnase",
+    "ONPG",
+    "Nitrate Reduction",
+    "Gelatin Hydrolysis",
+    "Esculin Hydrolysis",
+    "Lysine Decarboxylase",
+    "Ornitihine Decarboxylase",
+    "Arginine dihydrolase",
 
     # Fermentation tests
-    "Glucose Fermentation", "Lactose Fermentation", "Sucrose Fermentation",
-    "Maltose Fermentation", "Mannitol Fermentation", "Sorbitol Fermentation",
-    "Xylose Fermentation", "Rhamnose Fermentation", "Arabinose Fermentation",
-    "Raffinose Fermentation", "Trehalose Fermentation", "Inositol Fermentation",
-    "Fructose Fermentation", "Mannose Fermentation", "Inulin Fermentation",
+    "Glucose Fermentation",
+    "Lactose Fermentation",
+    "Sucrose Fermentation",
+    "Maltose Fermentation",
+    "Mannitol Fermentation",
+    "Sorbitol Fermentation",
+    "Xylose Fermentation",
+    "Rhamnose Fermentation",
+    "Arabinose Fermentation",
+    "Raffinose Fermentation",
+    "Trehalose Fermentation",
+    "Inositol Fermentation",
 
-    # Decarboxylase and reduction tests
-    "Nitrate Reduction", "Lysine Decarboxylase", "Ornitihine Decarboxylase",
-    "Arginine dihydrolase", "H2S", "Gelatin Hydrolysis", "Esculin Hydrolysis",
+    # Other differential tests
+    "Haemolysis",
+    "Haemolysis Type",
+    "NaCl Tolerant (>=6%)",
 
-    # Oxygen and temperature
-    "Oxygen Requirement", "Growth Temperature", "NaCl Tolerant (>=6%)",
-
-    # Specialty or species-specific assays
-    "CAMP Test", "Hippurate Hydrolysis", "Bile Solubility",
-    "Optochin Sensitivity", "Casein Hydrolysis", "Tyrosine Hydrolysis",
-
-    # Resistance / other
-    "Antibiotic Resistance", "Gas Production", "Metabolic Product",
-    "Other Products", "Growth Factors"
+    # Reserved for extension
+    "Other"
 ]
 
-# -------------------------------------------------------------
-# Field normalization
-# -------------------------------------------------------------
+# =========================================================
+#                  NORMALIZATION HELPERS
+# =========================================================
 def normalize_field(field: str) -> str:
-    """Normalize field names into canonical schema labels."""
+    """Normalize field names to canonical schema keys."""
     if not field:
         return "Unknown"
+    f = field.strip().lower().replace("_", " ")
 
-    f = field.strip().lower()
-    mapping = {
-        # General
-        "gram": "Gram Stain", "gram reaction": "Gram Stain",
-        "morphology": "Shape", "shape/morphology": "Shape",
-        "colony": "Colony Morphology", "media": "Media Grown On",
-
-        # Common biochemical short forms
-        "vp": "VP", "mr": "Methyl Red", "oxidase test": "Oxidase",
-        "catalase test": "Catalase", "coagulase test": "Coagulase",
-        "urease test": "Urease", "indole test": "Indole",
-        "citrate test": "Citrate", "dnase test": "Dnase",
-        "onpg test": "ONPG", "lipase": "Lipase Test",
-
-        # Haemolysis
-        "hemolysis": "Haemolysis", "hemolysis type": "Haemolysis Type",
+    mappings = {
+        "gram": "Gram Stain",
+        "gram stain": "Gram Stain",
+        "shape": "Shape",
+        "morphology": "Colony Morphology",
+        "motility": "Motility",
+        "capsule": "Capsule",
+        "spore": "Spore Formation",
+        "spore formation": "Spore Formation",
+        "oxygen": "Oxygen Requirement",
+        "oxygen requirement": "Oxygen Requirement",
+        "growth temp": "Growth Temperature",
+        "growth temperature": "Growth Temperature",
+        "media": "Media Grown On",
+        "media grown on": "Media Grown On",
+        "haemolysis": "Haemolysis",
         "haemolysis type": "Haemolysis Type",
-
-        # Sugar fermentation
-        "glucose": "Glucose Fermentation", "lactose": "Lactose Fermentation",
-        "sucrose": "Sucrose Fermentation", "maltose": "Maltose Fermentation",
-        "mannitol": "Mannitol Fermentation", "sorbitol": "Sorbitol Fermentation",
-        "xylose": "Xylose Fermentation", "rhamnose": "Rhamnose Fermentation",
-        "arabinose": "Arabinose Fermentation", "raffinose": "Raffinose Fermentation",
-        "trehalose": "Trehalose Fermentation", "inositol": "Inositol Fermentation",
-        "fructose": "Fructose Fermentation", "mannose": "Mannose Fermentation",
-        "inulin": "Inulin Fermentation",
-
-        # Decarboxylase / reduction
-        "lysine": "Lysine Decarboxylase", "ornithine": "Ornitihine Decarboxylase",
-        "arginine": "Arginine dihydrolase", "gelatin": "Gelatin Hydrolysis",
-        "esculin": "Esculin Hydrolysis", "nitrate": "Nitrate Reduction",
+        "oxidase": "Oxidase",
+        "catalase": "Catalase",
+        "coagulase": "Coagulase",
+        "urease": "Urease",
+        "indole": "Indole",
+        "citrate": "Citrate",
+        "methyl red": "Methyl Red",
+        "vp": "VP",
+        "dnase": "Dnase",
+        "onpg": "ONPG",
         "h2s": "H2S",
-
-        # Oxygen / temperature / salt
-        "oxygen": "Oxygen Requirement", "temperature": "Growth Temperature",
-        "nacl": "NaCl Tolerant (>=6%)", "salt tolerance": "NaCl Tolerant (>=6%)",
-
-        # Special tests
-        "camp": "CAMP Test", "camp test": "CAMP Test",
-        "hippurate": "Hippurate Hydrolysis", "hippurate hydrolysis": "Hippurate Hydrolysis",
-        "bile solubility": "Bile Solubility", "optochin": "Optochin Sensitivity",
-        "lecithinase test": "Lecithinase", "lecithinase": "Lecithinase",
-        "casein": "Casein Hydrolysis", "tyrosine": "Tyrosine Hydrolysis",
-
-        # Misc
-        "antibiotic": "Antibiotic Resistance", "gas": "Gas Production",
-        "product": "Metabolic Product", "other": "Other Products",
-        "growth factor": "Growth Factors"
+        "nitrate": "Nitrate Reduction",
+        "nitrate reduction": "Nitrate Reduction",
+        "gelatin": "Gelatin Hydrolysis",
+        "gelatin hydrolysis": "Gelatin Hydrolysis",
+        "esculin": "Esculin Hydrolysis",
+        "esculin hydrolysis": "Esculin Hydrolysis",
+        "lysine": "Lysine Decarboxylase",
+        "lysine decarboxylase": "Lysine Decarboxylase",
+        "ornitihine": "Ornitihine Decarboxylase",
+        "ornithine": "Ornitihine Decarboxylase",
+        "arginine": "Arginine dihydrolase",
+        "arginine dihydrolase": "Arginine dihydrolase",
+        "lipase": "Lipase Test",
+        "lipase test": "Lipase Test",
+        "nacl": "NaCl Tolerant (>=6%)",
+        "salt": "NaCl Tolerant (>=6%)",
+        "sodium chloride": "NaCl Tolerant (>=6%)",
+        "other": "Other",
     }
 
-    if f in mapping:
-        return mapping[f]
+    # Fermentation pattern
+    sugars = [
+        "glucose", "lactose", "sucrose", "maltose", "mannitol",
+        "sorbitol", "xylose", "rhamnose", "arabinose", "raffinose",
+        "trehalose", "inositol"
+    ]
+    for sugar in sugars:
+        if sugar in f and "ferment" in f:
+            return f"{sugar.capitalize()} Fermentation"
 
-    # Try to match partial name fragments
-    for key, val in mapping.items():
-        if key in f:
-            return val
-
-    # Fallback to title case
-    return field.strip().title()
+    return mappings.get(f, field.strip())
 
 
-# -------------------------------------------------------------
-# Value normalization
-# -------------------------------------------------------------
 def normalize_value(field: str, value: str) -> str:
-    """Normalize biochemical results to canonical values."""
+    """Normalize value text into canonical representation."""
     if not value:
         return "Unknown"
+    v = value.strip().lower()
+    f = normalize_field(field)
 
-    val = str(value).strip().lower()
-    field = normalize_field(field)
-
-    # Generic positives/negatives
-    if val in {"pos", "positive", "+", "yes"}:
+    # Standard biochemical
+    if v in {"pos", "positive", "+", "p"}:
         return "Positive"
-    if val in {"neg", "negative", "-", "no"}:
+    if v in {"neg", "negative", "-", "n"}:
         return "Negative"
-    if val in {"var", "variable"}:
+    if v in {"var", "variable", "v"}:
         return "Variable"
-    if val in {"unk", "unknown"}:
+    if v == "unknown":
         return "Unknown"
 
-    # Field-specific logic
-    if field == "Gram Stain":
-        if "neg" in val:
-            return "Negative"
-        if "pos" in val:
-            return "Positive"
-        return "Variable"
-
-    if field == "Haemolysis Type":
-        if "alpha" in val:
+    # Haemolysis type
+    if f == "Haemolysis Type":
+        if "alpha" in v:
             return "Alpha"
-        if "beta" in val:
+        if "beta" in v:
             return "Beta"
-        if "gamma" in val:
+        if "gamma" in v:
             return "Gamma"
-        if "none" in val:
+        if "none" in v:
             return "None"
-        return "Unknown"
 
-    if field == "Oxygen Requirement":
-        oxy_map = {
-            "aerobic": "Aerobic",
-            "anaerobic": "Anaerobic",
-            "microaerophilic": "Microaerophilic",
-            "capnophilic": "Capnophilic",
-            "facultative": "Facultative Anaerobe",
-            "intracellular": "Intracellular",
-        }
-        for k, v in oxy_map.items():
-            if k in val:
-                return v
-        return "Unknown"
+    # Oxygen requirement
+    if f == "Oxygen Requirement":
+        if "aerobic" in v and "facultative" not in v:
+            return "Aerobic"
+        if "anaerobic" in v and "facultative" not in v:
+            return "Anaerobic"
+        if "facultative" in v:
+            return "Facultative Anaerobe"
+        if "microaer" in v:
+            return "Microaerophilic"
+        if "capno" in v:
+            return "Capnophilic"
+        if "intracell" in v:
+            return "Intracellular"
 
-    if field == "Growth Temperature":
-        # Keep numeric / range formats as-is
-        val = val.replace("°c", "").replace("c", "").replace(" ", "")
-        return val if val else "Unknown"
+    # Gram Stain
+    if f == "Gram Stain":
+        if "neg" in v:
+            return "Negative"
+        if "pos" in v:
+            return "Positive"
+        if "var" in v:
+            return "Variable"
 
-    # Default
-    return value.strip().title()
+    # For Growth Temperature ranges
+    if f == "Growth Temperature":
+        v = v.replace("°c", "").replace(" ", "")
+        if "//" in v or "-" in v:
+            return v.replace("-", "//")
+        try:
+            float(v)
+            return v
+        except ValueError:
+            return "Unknown"
+
+    # If nothing matches, just capitalize nicely
+    return value.strip().capitalize()
 
 
-# -------------------------------------------------------------
-# Quick validation helpers
-# -------------------------------------------------------------
-def is_valid_field(field: str) -> bool:
-    return normalize_field(field) in ALL_FIELDS
-
-
-def get_all_fields() -> list:
-    return ALL_FIELDS
+def canonical_value_set(field: str):
+    """Return allowed canonical values for a field."""
+    f = normalize_field(field)
+    if f == "Haemolysis Type":
+        return {"Alpha", "Beta", "Gamma", "None"}
+    if f == "Oxygen Requirement":
+        return {"Aerobic", "Anaerobic", "Microaerophilic", "Capnophilic", "Facultative Anaerobe", "Intracellular"}
+    if f == "Gram Stain":
+        return {"Positive", "Negative", "Variable"}
+    return {"Positive", "Negative", "Variable", "Unknown"}
