@@ -20,6 +20,8 @@ import json
 import os
 import re
 from typing import Dict, Any, Optional, Tuple
+from engine.parser_rules_runtime import apply_rules, merge_into_record
+
 
 try:
     import ollama  # pip install ollama
