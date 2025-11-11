@@ -230,11 +230,14 @@ with tab_text:
     with colA:
         text_input = st.text_area("Free-text description", height=200)
     with colB:
-        use_llm = st.toggle("Use LLM fallback", value=True)
-        model_name = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"))
+    use_llm = st.toggle("Use LLM fallback", value=True, key="use_llm_text")
+    model_name = st.text_input("Ollama model",
+                               value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"),
+                               key="model_name_text")
 
-    parse_btn = st.button("🧠 Parse Text")
-    identify_btn = st.button("🔍 Identify from Parsed")
+    parse_btn = st.button("🧠 Parse Text", key="parse_text_btn")
+    identify_btn = st.button("🔍 Identify from Parsed", key="identify_from_parsed_btn")
+
 
     if "parsed_record" not in st.session_state:
         st.session_state.parsed_record = None
@@ -265,11 +268,19 @@ with tab_train:
 
     col1, col2 = st.columns([2,1])
     with col1:
-        gold_path = st.text_input("Gold tests path", value="training/gold_tests.json")
-        use_llm = st.toggle("Use LLM fallback", value=True)
+         gold_path = st.text_input("Gold tests path", value="training/gold_tests.json", key="gold_path_train")
+         use_llm_train = st.toggle("Use LLM fallback", value=True, key="use_llm_train")
     with col2:
-        model_name = st.text_input("Ollama model", value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"))
-    run_btn = st.button("▶️ Run gold tests")
+         model_name_train = st.text_input("Ollama model",
+                                         value=os.getenv("OLLAMA_MODEL", "deepseek-r1:latest"),
+                                         key="model_name_train")
+    run_btn = st.button("▶️ Run gold tests", key="run_gold_btn")
+
+    if run_btn:
+        summary, df_cases, df_fields = run_gold_tests(
+            gold_path, use_llm=use_llm_train, model=model_name_train
+        )
+
 
     if run_btn:
         try:
@@ -289,3 +300,4 @@ with tab_train:
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b></div>", unsafe_allow_html=True)
+
