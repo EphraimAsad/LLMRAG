@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "rules": [
+    // Examples to guide future additions (delete these comments once you commit):
+    // {
+    //   "id": "auto-generated",                 // we’ll generate later
+    //   "field": "Haemolysis",
+    //   "value": "Positive",
+    //   "pattern_type": "phrase",               // "phrase" | "regex"
+    //   "pattern": "beta-haemolytic",           // exact phrase match
+    //   "case_sensitive": false,
+    //   "priority": 50,                         // 0..100 (lower = earlier)
+    //   "source": "gold",
+    //   "created_at": "2025-11-11T13:00:00Z",
+    //   "status": "active"                      // "active" | "disabled"
+    // }
+  ]
+}
