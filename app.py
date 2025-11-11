@@ -71,7 +71,9 @@ st.sidebar.markdown(
     unsafe_allow_html=True
 )
 
+# --- FIXED: local import for re safety ---
 def get_unique_values(field):
+    import re  # ✅ ensures Streamlit hot-reload always has access
     vals = []
     for v in eng.db[field]:
         parts = re.split(r"[;/]", str(v))
@@ -82,6 +84,7 @@ def get_unique_values(field):
     vals.sort()
     return vals
 
+# --- SIDEBAR EXPANDERS ---
 with st.sidebar.expander("🧫 Morphological Tests", expanded=True):
     for field in MORPH_FIELDS:
         if field in ["Shape", "Colony Morphology", "Media Grown On"]:
@@ -115,6 +118,7 @@ with st.sidebar.expander("🧬 Other Tests", expanded=False):
         else:
             st.session_state.user_input[field] = st.selectbox(field, ["Unknown", "Positive", "Negative", "Variable"], index=0, key=field)
 
+# --- BUTTONS ---
 if st.sidebar.button("🔄 Reset All Inputs"):
     st.session_state["reset_trigger"] = True
     st.rerun()
@@ -141,6 +145,7 @@ if st.sidebar.button("🔍 Identify"):
             )
             st.session_state.results = results
 
+# --- DISPLAY RESULTS ---
 if not st.session_state.results.empty:
     st.info("Percentages based upon options entered. True confidence percentage shown within each expanded result.")
     for _, row in st.session_state.results.iterrows():
@@ -154,6 +159,7 @@ if not st.session_state.results.empty:
             if row["Extra Notes"]:
                 st.markdown(f"**Notes:** {row['Extra Notes']}")
 
+# --- EXPORT TO PDF ---
 def export_pdf(results_df, user_input):
     def safe_text(text):
         text = str(text).replace("•", "-").replace("—", "-").replace("–", "-")
@@ -198,7 +204,7 @@ if not st.session_state.results.empty:
             st.download_button("⬇️ Download PDF", f, file_name="BactAI-d_Report.pdf")
 
 # ------------------------------------------------
-# TRAINING TAB SECTION (already integrated earlier)
+# TRAINING TAB SECTION
 # ------------------------------------------------
 st.markdown("---")
 st.header("🧠 Training & Evaluation")
