@@ -266,7 +266,7 @@ from training.github_sync import (
 )
 with tab_train:
     st.markdown("Run your **Gold Tests** to measure parser accuracy and train weights.")
-        col1, col2 = st.columns([2,1])
+    col1, col2 = st.columns([2,1])
     with col1:
         gold_path = st.text_input("Gold tests path", value="training/gold_tests.json", key="gold_path_train")
         use_llm_train = st.toggle("Use LLM fallback", value=True, key="use_llm_train")
@@ -382,4 +382,5 @@ with tab_train:
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b></div>", unsafe_allow_html=True)
+
 
