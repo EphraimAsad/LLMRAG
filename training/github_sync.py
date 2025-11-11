@@ -1,99 +1,95 @@
-# training/github_sync.py
-from __future__ import annotations
-import base64
-import json
-import os
-from typing import Optional, Tuple
-
 import requests
+import base64
+from datetime import datetime
+import os
 
-API_BASE = "https://api.github.com"
-
-class GHError(RuntimeError):
-    pass
-
-def _headers(token: str) -> dict:
-    return {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "BactAI-D-GitClient"
-    }
-
-def _repo_parts(repo_full: str) -> Tuple[str, str]:
-    if "/" not in repo_full:
-        raise GHError(f"Invalid repo name '{repo_full}'. Expected 'owner/repo'.")
-    owner, repo = repo_full.split("/", 1)
-    return owner, repo
-
-def get_default_branch_sha(token: str, repo_full: str, branch: str) -> str:
-    owner, repo = _repo_parts(repo_full)
-    url = f"{API_BASE}/repos/{owner}/{repo}/git/ref/heads/{branch}"
-    r = requests.get(url, headers=_headers(token), timeout=20)
-    if r.status_code != 200:
-        raise GHError(f"Fetch branch '{branch}' failed: {r.status_code} - {r.text}")
-    return r.json()["object"]["sha"]
-
-def get_file_sha_if_exists(token: str, repo_full: str, path: str, ref: str) -> Optional[str]:
-    owner, repo = _repo_parts(repo_full)
-    url = f"{API_BASE}/repos/{owner}/{repo}/contents/{path}"
-    r = requests.get(url, headers=_headers(token), params={"ref": ref}, timeout=20)
-    if r.status_code == 404:
-        return None
-    if r.status_code != 200:
-        raise GHError(f"Get contents failed: {r.status_code} - {r.text}")
-    return r.json().get("sha")
-
-def create_branch(token: str, repo_full: str, new_branch: str, from_sha: str) -> None:
-    owner, repo = _repo_parts(repo_full)
-    url = f"{API_BASE}/repos/{owner}/{repo}/git/refs"
-    payload = {"ref": f"refs/heads/{new_branch}", "sha": from_sha}
-    r = requests.post(url, headers=_headers(token), json=payload, timeout=20)
-    if r.status_code not in (201, 422):  # 422 if already exists
-        raise GHError(f"Create branch failed: {r.status_code} - {r.text}")
-
-def put_file(
+# -------------------------------------------------------------
+# Helper: Commit file to GitHub and open PR
+# -------------------------------------------------------------
+def commit_to_github(
+    repo_url: str,
     token: str,
-    repo_full: str,
-    path: str,
-    content_text: str,
-    message: str,
-    branch: str,
-    committer_name: str,
-    committer_email: str,
-) -> dict:
-    """
-    Create or update a file via PUT /contents/{path}
-    """
-    owner, repo = _repo_parts(repo_full)
-    url = f"{API_BASE}/repos/{owner}/{repo}/contents/{path}"
-
-    current_sha = get_file_sha_if_exists(token, repo_full, path, ref=branch)
-    payload = {
-        "message": message,
-        "content": base64.b64encode(content_text.encode("utf-8")).decode("utf-8"),
-        "branch": branch,
-        "committer": {"name": committer_name, "email": committer_email},
-    }
-    if current_sha:
-        payload["sha"] = current_sha
-
-    r = requests.put(url, headers=_headers(token), json=payload, timeout=25)
-    if r.status_code not in (200, 201):
-        raise GHError(f"Commit failed: {r.status_code} - {r.text}")
-    return r.json()
-
-def open_pull_request(
-    token: str,
-    repo_full: str,
-    title: str,
-    head_branch: str,
     base_branch: str,
-    body: str = ""
-) -> dict:
-    owner, repo = _repo_parts(repo_full)
-    url = f"{API_BASE}/repos/{owner}/{repo}/pulls"
-    payload = {"title": title, "head": head_branch, "base": base_branch, "body": body}
-    r = requests.post(url, headers=_headers(token), json=payload, timeout=20)
-    if r.status_code != 201:
-        raise GHError(f"Open PR failed: {r.status_code} - {r.text}")
-    return r.json()
+    new_branch: str,
+    file_path: str,
+    commit_message: str
+):
+    """
+    Commits a file to GitHub by:
+    1. Creating a new branch (timestamped)
+    2. Uploading the file
+    3. Opening a Pull Request into base_branch
+
+    Returns: (ok, message)
+    """
+
+    try:
+        if not repo_url or not token:
+            return False, "Missing repo URL or token"
+
+        # Extract repo owner/name from URL
+        repo_url = repo_url.strip().rstrip(".git").replace("https://github.com/", "")
+        api_base = f"https://api.github.com/repos/{repo_url}"
+
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        # Step 1: Get base branch SHA
+        r = requests.get(f"{api_base}/git/ref/heads/{base_branch}", headers=headers)
+        if r.status_code != 200:
+            return False, f"Base branch not found: {r.text}"
+        base_sha = r.json()["object"]["sha"]
+
+        # Step 2: Create new branch (with timestamp to prevent duplicates)
+        unique_branch = f"{new_branch}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        ref_data = {"ref": f"refs/heads/{unique_branch}", "sha": base_sha}
+        r = requests.post(f"{api_base}/git/refs", headers=headers, json=ref_data)
+        if r.status_code not in [200, 201]:
+            return False, f"Failed to create branch: {r.text}"
+
+        # Step 3: Read file content and encode
+        if not os.path.exists(file_path):
+            return False, f"File not found: {file_path}"
+        with open(file_path, "rb") as f:
+            content = f.read()
+        encoded = base64.b64encode(content).decode("utf-8")
+
+        # Step 4: Create/update the file on the branch
+        filename = os.path.basename(file_path)
+        file_api = f"{api_base}/contents/{file_path}"
+
+        data = {
+            "message": commit_message,
+            "content": encoded,
+            "branch": unique_branch
+        }
+
+        r = requests.put(file_api, headers=headers, json=data)
+        if r.status_code not in [200, 201]:
+            return False, f"Failed to update file: {r.text}"
+
+        # Step 5: Create PR into base branch
+        pr_title = f"Automated update: {filename} ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
+        pr_body = (
+            f"This PR was automatically generated by BactAI-D Training.\n"
+            f"File updated: `{file_path}`\n\n"
+            f"Commit message:\n```\n{commit_message}\n```"
+        )
+        pr_data = {
+            "title": pr_title,
+            "body": pr_body,
+            "head": unique_branch,
+            "base": base_branch
+        }
+
+        r = requests.post(f"{api_base}/pulls", headers=headers, json=pr_data)
+        if r.status_code not in [200, 201]:
+            return False, f"Open PR failed: {r.text}"
+
+        pr_url = r.json().get("html_url", "")
+        return True, f"✅ PR created successfully: {pr_url}"
+
+    except Exception as e:
+        return False, f"GitHub commit exception: {e}"
