@@ -285,7 +285,91 @@ with tab_train:
             st.download_button("⬇️ Download per-case CSV", df_cases.to_csv(index=False), file_name="per_case_accuracy.csv", key="dl_case_csv")
         except Exception as e:
             st.error(f"Error: {e}")
+# --- below where you show summary/df_cases/df_fields after run_gold_tests ---
+from training.weights import compute_weights_from_accuracy, sanitize_weights, to_pretty_json
+from training.github_sync import (
+    get_default_branch_sha, create_branch, put_file, GHError
+)
+
+st.markdown("### Derive & preview field weights")
+min_w = st.number_input("Min weight", value=0.6, step=0.05, key="min_w_train")
+max_w = st.number_input("Max weight", value=1.6, step=0.05, key="max_w_train")
+
+if st.button("⚖️ Compute weights", key="compute_weights_btn"):
+    weights = compute_weights_from_accuracy(summary["per_field_accuracy"], min_w=min_w, max_w=max_w)
+    ok, msg = sanitize_weights(weights, min_w=min_w, max_w=max_w)
+    if not ok:
+        st.error(f"Sanitization failed: {msg}")
+    else:
+        st.success("Weights computed & sanitized.")
+        st.session_state["weights_json"] = to_pretty_json(weights)
+
+if st.session_state.get("weights_json"):
+    st.code(st.session_state["weights_json"], language="json")
+
+    st.markdown("### Commit to GitHub")
+    repo_default = st.secrets.get("GITHUB_REPO", "")
+    branch_default = st.secrets.get("GITHUB_BRANCH", "main")
+    token_default = st.secrets.get("GITHUB_TOKEN", "")
+    name_default = st.secrets.get("GITHUB_AUTHOR_NAME", "BactAI-D Bot")
+    email_default = st.secrets.get("GITHUB_AUTHOR_EMAIL", "bot@bactai.local")
+
+    repo_full = st.text_input("Repo (owner/repo)", value=repo_default, key="gh_repo_inp")
+    base_branch = st.text_input("Base branch", value=branch_default, key="gh_base_branch_inp")
+    create_pr = st.toggle("Create PR (recommended)", value=True, key="gh_create_pr_toggle")
+    new_branch_name = st.text_input("New branch name (if PR)", value="bactai-weights-update", key="gh_new_branch_inp")
+    token = st.text_input("GitHub Token", type="password", value=token_default, key="gh_token_inp")
+    committer_name = st.text_input("Committer name", value=name_default, key="gh_name_inp")
+    committer_email = st.text_input("Committer email", value=email_default, key="gh_email_inp")
+
+    commit_btn = st.button("📤 Commit field_weights.json", key="gh_commit_btn")
+
+    if commit_btn:
+        if not (repo_full and token):
+            st.error("Repo and token are required.")
+        else:
+            try:
+                content = st.session_state["weights_json"]
+                path = "training/field_weights.json"
+
+                if create_pr:
+                    # 1) create branch from base
+                    sha = get_default_branch_sha(token, repo_full, base_branch)
+                    create_branch(token, repo_full, new_branch_name, sha)
+                    target_branch = new_branch_name
+                else:
+                    target_branch = base_branch
+
+                # 2) put file
+                res = put_file(
+                    token=token,
+                    repo_full=repo_full,
+                    path=path,
+                    content_text=content,
+                    message="feat(training): update field_weights.json from gold tests",
+                    branch=target_branch,
+                    committer_name=committer_name,
+                    committer_email=committer_email,
+                )
+
+                if create_pr:
+                    from training.github_sync import open_pull_request
+                    pr = open_pull_request(
+                        token, repo_full,
+                        title="Update field_weights.json",
+                        head_branch=new_branch_name,
+                        base_branch=base_branch,
+                        body="Automated weights update from Streamlit Training tab."
+                    )
+                    st.success(f"Committed to branch '{new_branch_name}' and opened PR #{pr['number']}.")
+                else:
+                    st.success(f"Committed directly to '{target_branch}'.")
+            except GHError as e:
+                st.error(f"GitHub error: {e}")
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
 
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b></div>", unsafe_allow_html=True)
+
