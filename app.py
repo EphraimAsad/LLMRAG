@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import os
+import time
 from fpdf import FPDF
 from datetime import datetime
 from engine import BacteriaIdentifier
@@ -40,7 +41,6 @@ st.markdown("Choose an input mode: **Form**, **Text Parser**, or **Training** fo
 # -----------------------------------------------------------------------------
 # HELPERS
 # -----------------------------------------------------------------------------
-
 def get_unique_values(field):
     vals = []
     for v in eng.db[field]:
@@ -259,16 +259,14 @@ with tab_text:
                         st.markdown(f"**Reasoning:** {row['Reasoning']}")
 
 # ----------------------------- TRAINING TAB ----------------------------------
+from training.gold_eval import run_gold_tests
+from training.weights import compute_weights_from_accuracy, sanitize_weights, to_pretty_json
+from training.github_sync import (
+    get_default_branch_sha, create_branch, put_file, GHError
+)
 with tab_train:
-    from training.gold_eval import run_gold_tests
-    from training.weights import compute_weights_from_accuracy, sanitize_weights, to_pretty_json
-    from training.github_sync import (
-        get_default_branch_sha, create_branch, put_file, GHError
-    )
-
     st.markdown("Run your **Gold Tests** to measure parser accuracy and train weights.")
-
-    col1, col2 = st.columns([2,1])
+        col1, col2 = st.columns([2,1])
     with col1:
         gold_path = st.text_input("Gold tests path", value="training/gold_tests.json", key="gold_path_train")
         use_llm_train = st.toggle("Use LLM fallback", value=True, key="use_llm_train")
@@ -280,19 +278,11 @@ with tab_train:
         try:
             with st.spinner("Evaluating gold tests..."):
                 summary, df_cases, df_fields = run_gold_tests(gold_path, use_llm=use_llm_train, model=model_name_train)
-
-            # 💾 Save to session_state
             st.session_state["gold_summary"] = summary
             st.session_state["gold_cases"] = df_cases
             st.session_state["gold_fields"] = df_fields
-
             st.subheader(f"Overall accuracy: **{summary['overall_accuracy_percent']}%** ({summary['cases_count']} cases)")
-            st.markdown("### Per-field accuracy:")
             st.dataframe(df_fields, use_container_width=True)
-            st.markdown("### Per-case results:")
-            st.dataframe(df_cases, use_container_width=True)
-            st.download_button("⬇️ Download per-field CSV", df_fields.to_csv(index=False), file_name="per_field_accuracy.csv", key="dl_field_csv")
-            st.download_button("⬇️ Download per-case CSV", df_cases.to_csv(index=False), file_name="per_case_accuracy.csv", key="dl_case_csv")
         except Exception as e:
             st.error(f"Error: {e}")
 
@@ -307,11 +297,11 @@ with tab_train:
             summary = st.session_state["gold_summary"]
             weights = compute_weights_from_accuracy(summary["per_field_accuracy"], min_w=min_w, max_w=max_w)
             ok, msg = sanitize_weights(weights, min_w=min_w, max_w=max_w)
-            if not ok:
-                st.error(f"Sanitization failed: {msg}")
-            else:
-                st.success("Weights computed & sanitized.")
+            if ok:
                 st.session_state["weights_json"] = to_pretty_json(weights)
+                st.success("Weights computed & sanitized.")
+            else:
+                st.error(f"Sanitization failed: {msg}")
 
     if st.session_state.get("weights_json"):
         st.code(st.session_state["weights_json"], language="json")
@@ -326,7 +316,11 @@ with tab_train:
         repo_full = st.text_input("Repo (owner/repo)", value=repo_default, key="gh_repo_inp")
         base_branch = st.text_input("Base branch", value=branch_default, key="gh_base_branch_inp")
         create_pr = st.toggle("Create PR (recommended)", value=True, key="gh_create_pr_toggle")
-        new_branch_name = st.text_input("New branch name (if PR)", value="bactai-weights-update", key="gh_new_branch_inp")
+
+        # 🔹 Auto-generate timestamped branch name
+        default_branch_name = f"bactai-weights-update-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        new_branch_name = st.text_input("New branch name (if PR)", value=default_branch_name, key="gh_new_branch_inp")
+
         token = st.text_input("GitHub Token", type="password", value=token_default, key="gh_token_inp")
         committer_name = st.text_input("Committer name", value=name_default, key="gh_name_inp")
         committer_email = st.text_input("Committer email", value=email_default, key="gh_email_inp")
@@ -338,17 +332,21 @@ with tab_train:
                 st.error("Repo and token are required.")
             else:
                 try:
+                    from training.github_sync import open_pull_request
                     content = st.session_state["weights_json"]
                     path = "training/field_weights.json"
 
                     if create_pr:
                         sha = get_default_branch_sha(token, repo_full, base_branch)
-                        create_branch(token, repo_full, new_branch_name, sha)
+                        try:
+                            create_branch(token, repo_full, new_branch_name, sha)
+                        except GHError:
+                            st.info(f"Branch '{new_branch_name}' already exists, reusing it.")
                         target_branch = new_branch_name
                     else:
                         target_branch = base_branch
 
-                    res = put_file(
+                    put_file(
                         token=token,
                         repo_full=repo_full,
                         path=path,
@@ -360,17 +358,22 @@ with tab_train:
                     )
 
                     if create_pr:
-                        from training.github_sync import open_pull_request
-                        pr = open_pull_request(
-                            token, repo_full,
-                            title="Update field_weights.json",
-                            head_branch=new_branch_name,
-                            base_branch=base_branch,
-                            body="Automated weights update from Streamlit Training tab."
-                        )
-                        st.success(f"Committed to branch '{new_branch_name}' and opened PR #{pr['number']}.")
+                        try:
+                            pr = open_pull_request(
+                                token, repo_full,
+                                title="Update field_weights.json",
+                                head_branch=new_branch_name,
+                                base_branch=base_branch,
+                                body="Automated weights update from Streamlit Training tab."
+                            )
+                            st.success(f"✅ Committed and opened PR #{pr['number']} on branch '{new_branch_name}'.")
+                        except GHError as e:
+                            if "already exists" in str(e):
+                                st.warning(f"PR already open for '{new_branch_name}'. Commit added to existing PR.")
+                            else:
+                                raise
                     else:
-                        st.success(f"Committed directly to '{target_branch}'.")
+                        st.success(f"✅ Committed directly to '{target_branch}'.")
                 except GHError as e:
                     st.error(f"GitHub error: {e}")
                 except Exception as e:
@@ -379,3 +382,4 @@ with tab_train:
 # --- FOOTER ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center; font-size:14px;'>Created by <b>Zain</b></div>", unsafe_allow_html=True)
+
