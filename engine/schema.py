@@ -365,15 +365,39 @@ def validate_record(record: Dict[str, str]) -> List[str]:
 # Canonicalization helpers
 # -----------------------------
 
+# -----------------------------
+# Support for unknown / extra tests
+# -----------------------------
+
+OTHER_FIELD = "Other"
+
 def canonicalize_record(record: Dict[str, str]) -> Dict[str, str]:
     """
     Return a new dict with normalized values and any missing fields filled with 'Unknown'.
+    Any unrecognized fields are moved into the 'Other' field as 'Name: Value' pairs.
     """
     out: Dict[str, str] = {}
+    extras: List[str] = []
+
+    for field, val in record.items():
+        if field in FIELD_ORDER:
+            out[field] = normalize_value(field, val)
+        else:
+            # preserve unknown tests in a semicolon-separated "Other" list
+            extras.append(f"{field}: {val}")
+
+    # Fill in any missing known fields
     for field in FIELD_ORDER:
-        val = record.get(field, UNKNOWN)
-        out[field] = normalize_value(field, val)
+        if field not in out:
+            out[field] = UNKNOWN
+
+    # Merge extras into 'Other'
+    out[OTHER_FIELD] = "; ".join(extras) if extras else UNKNOWN
     return out
+
+# Make sure 'Other' is officially known to the schema
+FIELD_ORDER.append(OTHER_FIELD)
+ALL_FIELDS.add(OTHER_FIELD)
 
 __all__ = [
     "UNKNOWN",
@@ -392,3 +416,4 @@ __all__ = [
     "validate_record",
     "canonicalize_record",
 ]
+
