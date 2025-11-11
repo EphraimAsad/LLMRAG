@@ -1,6 +1,8 @@
 import pandas as pd
 import re
 import random
+import os
+import json
 
 # -----------------------------
 # Helper Function
@@ -19,6 +21,7 @@ def join_with_and(items):
 # -----------------------------
 class IdentificationResult:
     """Stores data about a single bacterial genus result and generates reasoning text."""
+
     def __init__(
         self,
         genus,
@@ -85,14 +88,12 @@ class IdentificationResult:
         # Join highlights grammatically
         summary = ", ".join(highlights[:-1]) + " and " + highlights[-1] if len(highlights) > 1 else "".join(highlights)
 
-        # Confidence text
         confidence_text = (
             "The confidence in this identification is high."
             if self.confidence_percent() >= 70
             else "The confidence in this identification is moderate."
         )
 
-        # Comparative reasoning vs other close results
         comparison = ""
         if ranked_results and len(ranked_results) > 1:
             close_others = ranked_results[1:3]
@@ -111,8 +112,23 @@ class IdentificationResult:
 # -----------------------------
 class BacteriaIdentifier:
     """Main engine to match bacterial genus based on biochemical & morphological data."""
+
     def __init__(self, db: pd.DataFrame):
         self.db = db.fillna("")
+
+        # Load field weights if available
+        self.field_weights = {}
+        weights_path = os.path.join("training", "field_weights.json")
+        if os.path.exists(weights_path):
+            try:
+                with open(weights_path, "r", encoding="utf-8") as f:
+                    self.field_weights = json.load(f)
+                print(f"[INFO] Loaded {len(self.field_weights)} field weights from {weights_path}")
+            except Exception as e:
+                print(f"[WARN] Could not load weights file: {e}")
+                self.field_weights = {}
+        else:
+            self.field_weights = {}
 
     # -----------------------------
     # Field Comparison Logic
@@ -203,7 +219,6 @@ class BacteriaIdentifier:
                 user_val = user_input.get(field, "")
                 score = self.compare_field(db_val, user_val, field)
 
-                # Count only real inputs for relative confidence
                 if user_val and user_val.lower() != "unknown":
                     total_fields_evaluated += 1
 
@@ -211,16 +226,17 @@ class BacteriaIdentifier:
                     total_score = -999
                     break  # Hard exclusion ends comparison
 
-                elif score == 1:
-                    total_score += 1
+                # Retrieve field weight (default 1.0)
+                weight = float(self.field_weights.get(field, 1.0))
+
+                if score == 1:
+                    total_score += 1 * weight
                     matched_fields.append(field)
                     reasoning_factors[field] = user_val
-
                 elif score == -1:
-                    total_score -= 1
+                    total_score -= 1 * weight
                     mismatched_fields.append(field)
 
-            # Append valid genus
             if total_score > -999:
                 extra_notes = row.get("Extra Notes", "")
                 results.append(
@@ -245,8 +261,4 @@ class BacteriaIdentifier:
             for r in results[:3]:
                 r.reasoning_factors["next_tests"] = ", ".join(top_suggestions)
 
-        # Return top 10 results
         return results[:10]
-
-
-
